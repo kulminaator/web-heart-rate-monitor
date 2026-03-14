@@ -21,6 +21,8 @@
 ## How to Use
 - Easy path: open the page from github at https://kulminaator.github.io/web-heart-rate-monitor/ 
 - Hard path: clone repo, open index.html
+- When opening the app - cover the camera with your finger, press "start"
+- wait for the signal to stabilize and look at the reading
 
 ## Requirements
 - Modern browser with WebRTC support
