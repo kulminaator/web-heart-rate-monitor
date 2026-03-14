@@ -1,9 +1,10 @@
 # Web browser based heart rate monitor
-
-* Uses the camera of your phone or your computer to detect your heart rate. This is not a professional medical tool. Use at your own risk.
+- Uses the camera of your phone or your computer to detect your heart rate. This is not a professional medical tool. Use at your own risk.
+- Analyzes the brightness changes with FFT to detect heart beats per minute.
+- In addition to being functional, also looks cool in my opinion.
 
 ## Privacy
- This product is 100% private, all the source code used you can see right here. No data is collected or sent anywhere. Enjoy.
+- This product is 100% private, all the source code used you can see right here. No data is collected or sent anywhere. Enjoy.
 
 ## Features
 - Real-time heart rate monitoring using camera
@@ -18,11 +19,8 @@
 - `script.js` - Core application logic
 
 ## How to Use
-1. Open `index.html` in a modern browser
-2. Click "Start" to begin camera access
-3. Place your finger over the camera lens
-4. Wait for heart rate detection
-5. Use "Stop" to pause and "Torch" to toggle flashlight
+- Easy path: open the page from github at https://kulminaator.github.io/web-heart-rate-monitor/ 
+- Hard path: clone repo, open index.html
 
 ## Requirements
 - Modern browser with WebRTC support
