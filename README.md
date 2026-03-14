@@ -3,6 +3,10 @@
 - Analyzes the brightness changes with FFT to detect heart beats per minute.
 - In addition to being functional, also looks cool in my opinion.
 
+## Screenshot
+- Should look like this when it loads on your phone (or any other device with camera)
+![Screenshot image](screenshot.png?raw=true "Screenshot image")
+
 ## Privacy
 - This product is 100% private, all the source code used you can see right here. No data is collected or sent anywhere. Enjoy.
 
