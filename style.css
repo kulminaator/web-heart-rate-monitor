@@ -356,13 +356,6 @@ body {
     letter-spacing: 0.06em;
     line-height: 1.8;
 }
-.inst-privacy {
-    margin-top: 8px;
-    font-size: 9px;
-    color: rgba(0,255,136,0.25);
-    letter-spacing: 0.14em;
-    text-align: center;
-}
 
 /* ── GRAPH BLOCKS ─────────────────────────────────────────── */
 .graph-block {
@@ -551,4 +544,65 @@ body {
 
     /* Bottom bar — hide on very small screens to save space */
     .bottombar { display: none; }
+}
+
+/* Styling the backdrop (the area behind the modal) */
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.modal {
+  border: none;
+  border-radius: 8px;
+  padding: 2rem;
+  max-width: 400px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+  align-items: center;
+  text-align: center;
+  background: var(--bg-panel);
+  color: var(--green);
+
+  /* 1. Reset any weird inherited styles */
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+
+  /* 2. The 'Fixed Coordinate' centering */
+  position: fixed;
+  top: 20%;
+  left: 50%;
+
+  /* 3. Pull it back by exactly half its own size */
+  transform: translate(-50%, -50%);
+
+  /* 4. Ensure it doesn't touch the screen edges on mobile */
+  width: 90%;
+  max-width: 450px;
+  margin: 0;
+}
+
+.modal-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  text-align: center;
+  padding: 10px;
+}
+
+.btn:focus {
+  outline: 3px solid var(--green-glow);
+  outline-offset: 2px;
+  box-shadow: 0 0 8px rgba(50, 205, 50, 0.5);
+}
+
+.source-link {
+  color: var(--green-dim);
+}
+
+.source-link:focus {
+  outline: 3px solid var(--green-glow);
+  outline-offset: 2px;
+  box-shadow: 0 0 8px rgba(50, 205, 50, 0.5);
 }

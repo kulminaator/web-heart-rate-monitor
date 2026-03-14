@@ -634,4 +634,17 @@ class HeartRateMonitor {
 
 document.addEventListener('DOMContentLoaded', () => {
     new HeartRateMonitor();
+
+    const introModal = document.querySelector('#intro-modal');
+    const closeBtn = document.querySelector('#close-btn');
+
+    // .showModal() is the native method to open the dialog as a top-level overlay
+    if (introModal) {
+        introModal.showModal();
+    }
+
+    // Close logic using arrow functions
+    closeBtn.addEventListener('click', () => {
+        introModal.close();
+    });
 });
