@@ -8,14 +8,18 @@
 ![Screenshot image](screenshot.png?raw=true "Screenshot image")
 
 ## Privacy
-- This product is 100% private, all the source code used you can see right here. No data is collected or sent anywhere. Enjoy.
+- This product is 100% private, all the source code used you can see right here. 
+- No data is collected or sent anywhere. 
+- No ads are pushed in your face
+- All source is available on github
+- Enjoy.
 
 ## Features
 - Real-time heart rate monitoring using camera
 - Visual display of heart rate in BPM
 - Pulse graph visualization
 - Torch/flashlight control
-- Privacy-focused - no data collection
+- Privacy-focused - no data collection, no ads, no tracking, no nothing
 
 ## Files
 - `index.html` - Main HTML structure
@@ -26,7 +30,7 @@
 - Easy path: open the page from github at https://kulminaator.github.io/web-heart-rate-monitor/ 
 - Hard path: clone repo, open index.html
 - When opening the app - cover the camera with your finger, press "start"
-- wait for the signal to stabilize and look at the reading
+- Wait for the signal to stabilize and look at the reading
 
 ## Requirements
 - Modern browser with WebRTC support
