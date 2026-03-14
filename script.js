@@ -400,7 +400,7 @@ class HeartRateMonitor {
 
     updateDisplay() {
         const bpm = this.currentBPM;
-        this.bpmDisplay.textContent = bpm > 0 ? bpm : '--';
+        this.bpmDisplay.textContent = bpm > 0 ? bpm.toString().padStart(3, '0') : '---';
 
         if (bpm > 0) {
             // BPM bar (40–200 range)
