@@ -185,6 +185,17 @@ class HeartRateMonitor {
     sampleFrame(now) {
         if (this.video.videoWidth === 0 || this.video.videoHeight === 0) return;
 
+        const sampleValue = this.calculateFrameBrightness();
+        if (sampleValue === null) return;
+
+        const sample = { value: sampleValue, time: now };
+        this.signalBuffer.push(sample);
+        this.waveformDisplay.push({ value: sample.value, time: now });
+
+        this.trimSignalBuffers(now);
+    }
+
+    calculateFrameBrightness() {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         canvas.width = this.video.videoWidth;
@@ -214,12 +225,10 @@ class HeartRateMonitor {
             }
         }
 
-        if (count > 0) {
-            const sample = { value: sum / count, time: now };
-            this.signalBuffer.push(sample);
-            this.waveformDisplay.push({ value: sample.value, time: now });
-        }
+        return count > 0 ? sum / count : null;
+    }
 
+    trimSignalBuffers(now) {
         // Trim main buffer to MAX_SIGNAL_DURATION seconds
         const cutoff = now - this.MAX_SIGNAL_DURATION * 1000;
         while (this.signalBuffer.length > 0 && this.signalBuffer[0].time < cutoff) {
@@ -238,6 +247,17 @@ class HeartRateMonitor {
     analyzeSignal() {
         if (this.signalBuffer.length < 64) return; // Need enough data
 
+        const { magnitudes, sampleRate, N, freqResolution } = this.processFFT();
+        if (!magnitudes) return;
+
+        const peakBin = this.findPeakFrequency(magnitudes, freqResolution);
+        const correctedPeakBin = this.applyHarmonicCorrection(magnitudes, peakBin, freqResolution);
+
+        const rawBPM = Math.round(correctedPeakBin * freqResolution * 60);
+        this.updateBPMHistory(rawBPM);
+    }
+
+    processFFT() {
         const values = this.signalBuffer.map(s => s.value);
 
         // Resample to a uniform grid via linear interpolation
@@ -267,8 +287,13 @@ class HeartRateMonitor {
         this.fftSampleRate = sampleRate;
         this.fftN = N;
 
-        // Find the dominant frequency in the 0.67–3.33 Hz range (40–200 BPM)
         const freqResolution = sampleRate / N;
+
+        return { magnitudes, sampleRate, N, freqResolution };
+    }
+
+    findPeakFrequency(magnitudes, freqResolution) {
+        // Find the dominant frequency in the 0.67–3.33 Hz range (40–200 BPM)
         const minBin = Math.ceil(0.67 / freqResolution);
         const maxBin = Math.floor(3.33 / freqResolution);
 
@@ -281,11 +306,16 @@ class HeartRateMonitor {
             }
         }
 
+        return peakBin;
+    }
+
+    applyHarmonicCorrection(magnitudes, peakBin, freqResolution) {
         // ── Harmonic correction ────────────────────────────────────────────────
         // The PPG waveform has a dicrotic notch (two bumps per beat), so the FFT
         // often finds a strong sub-harmonic at f/2 (half the true heart rate).
         // If doubling the candidate frequency stays in range AND its bin has at
         // least 40% of the peak's energy, the sub-harmonic fooled us — use 2×.
+        const maxBin = Math.floor(3.33 / freqResolution);
         const harmonicBin = peakBin * 2;
         if (harmonicBin <= Math.min(maxBin, magnitudes.length - 1)) {
             // Also check the two neighbouring bins around the harmonic for robustness
@@ -294,13 +324,15 @@ class HeartRateMonitor {
                 magnitudes[harmonicBin]     || 0,
                 magnitudes[harmonicBin + 1] || 0
             );
-            if (harmonicMag >= peakMag * 0.40) {
-                peakBin = harmonicBin;
+            if (harmonicMag >= magnitudes[peakBin] * 0.40) {
+                return harmonicBin;
             }
         }
 
-        const rawBPM = Math.round(peakBin * freqResolution * 60);
+        return peakBin;
+    }
 
+    updateBPMHistory(rawBPM) {
         // ── Exponential moving average smoothing ──────────────────────────────
         // Damps single-frame jumps. α=0.35 → new reading gets 35% weight,
         // history gets 65%. Higher α = more responsive, lower = more stable.
@@ -403,34 +435,54 @@ class HeartRateMonitor {
         this.bpmDisplay.textContent = bpm > 0 ? bpm.toString().padStart(3, '0') : '---';
 
         if (bpm > 0) {
-            // BPM bar (40–200 range)
-            const pct = Math.min(100, Math.max(0, ((bpm - 40) / 160) * 100));
-            if (this.bpmBar) this.bpmBar.style.width = pct + '%';
-
-            // Peak/low tracking
-            if (bpm > this.peakBPM) this.peakBPM = bpm;
-            if (bpm < this.lowBPM)  this.lowBPM  = bpm;
-
-            // Stats
-            const vals = this.bpmHistory.map(p => p.value);
-            const avg  = vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : '--';
-            if (this.statCurrent) this.statCurrent.textContent = bpm;
-            if (this.statAvg)     this.statAvg.textContent     = avg;
-            if (this.statPeak)    this.statPeak.textContent    = this.peakBPM;
-            if (this.statLow)     this.statLow.textContent     = this.lowBPM < 999 ? this.lowBPM : '--';
-
-            // Alert color for high BPM
-            if (this.bpmDisplay) {
-                this.bpmDisplay.classList.toggle('alert', bpm > 150);
-            }
-
-            // Heart beating animation
-            if (this.heartIcon) this.heartIcon.classList.add('beating');
-
-            // Status
-            if (this.statusLabel) this.statusLabel.textContent = 'MONITORING';
+            this.updateBPMBar(bpm);
+            this.updateBPMStats(bpm);
+            this.updateBPMAlert(bpm);
+            this.updateHeartAnimation();
+            this.updateStatus('MONITORING');
         }
 
+        this.updateSampleCounter();
+    }
+
+    updateBPMBar(bpm) {
+        // BPM bar (40–200 range)
+        const pct = Math.min(100, Math.max(0, ((bpm - 40) / 160) * 100));
+        if (this.bpmBar) this.bpmBar.style.width = pct + '%';
+    }
+
+    updateBPMStats(bpm) {
+        // Peak/low tracking
+        if (bpm > this.peakBPM) this.peakBPM = bpm;
+        if (bpm < this.lowBPM)  this.lowBPM  = bpm;
+
+        // Stats
+        const vals = this.bpmHistory.map(p => p.value);
+        const avg  = vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : '--';
+        if (this.statCurrent) this.statCurrent.textContent = bpm;
+        if (this.statAvg)     this.statAvg.textContent     = avg;
+        if (this.statPeak)    this.statPeak.textContent    = this.peakBPM;
+        if (this.statLow)     this.statLow.textContent     = this.lowBPM < 999 ? this.lowBPM : '--';
+    }
+
+    updateBPMAlert(bpm) {
+        // Alert color for high BPM
+        if (this.bpmDisplay) {
+            this.bpmDisplay.classList.toggle('alert', bpm > 150);
+        }
+    }
+
+    updateHeartAnimation() {
+        // Heart beating animation
+        if (this.heartIcon) this.heartIcon.classList.add('beating');
+    }
+
+    updateStatus(text) {
+        // Status
+        if (this.statusLabel) this.statusLabel.textContent = text;
+    }
+
+    updateSampleCounter() {
         // Sample counter
         if (this.sampleCount) {
             this.sampleCount.textContent = 'SAMPLES: ' + this.signalBuffer.length;
@@ -502,6 +554,12 @@ class HeartRateMonitor {
         const pts = this.bpmHistory;
         if (pts.length < 2) return;
 
+        const { width, height, toX, toY } = this.setupGraphCoordinates(pts);
+        this.drawGridLines(toY, width, height);
+        this.drawBPMCurve(pts, toX, toY);
+    }
+
+    setupGraphCoordinates(pts) {
         const width = this.canvas.width;
         const height = this.canvas.height;
         const BPM_MIN = 40;
@@ -516,6 +574,10 @@ class HeartRateMonitor {
         const toX = (t) => ((t - tStart) / windowMs) * width;
         const toY = (v) => pad + (1 - (v - BPM_MIN) / (BPM_MAX - BPM_MIN)) * (height - pad * 2);
 
+        return { width, height, toX, toY };
+    }
+
+    drawGridLines(toY, width, height) {
         // Draw grid lines at 60, 80, 100, 120, 140 BPM
         this.ctx.strokeStyle = '#0d2e16';
         this.ctx.lineWidth = 1;
@@ -528,7 +590,9 @@ class HeartRateMonitor {
             this.ctx.lineTo(width, y);
             this.ctx.stroke();
         }
+    }
 
+    drawBPMCurve(pts, toX, toY) {
         // Draw smooth curve using cardinal spline (Catmull-Rom) through BPM points
         this.ctx.beginPath();
         this.ctx.strokeStyle = '#00ff88';
@@ -567,6 +631,12 @@ class HeartRateMonitor {
         const pts = this.waveformDisplay;
         if (pts.length < 2) return;
 
+        const { width, height, toX, toY, lo, hi } = this.setupFFTGraphCoordinates(pts);
+        this.drawFFTBaseline(toY, width, height, lo, hi);
+        this.drawWaveformCurve(pts, toX, toY);
+    }
+
+    setupFFTGraphCoordinates(pts) {
         const width = this.fftCanvas.width;
         const height = this.fftCanvas.height;
         const pad = 6;
@@ -591,6 +661,10 @@ class HeartRateMonitor {
         const toX = (t) => ((t - tStart) / windowMs) * width;
         const toY = (v) => pad + (1 - (v - lo) / visRange) * (height - pad * 2);
 
+        return { width, height, toX, toY, lo, hi };
+    }
+
+    drawFFTBaseline(toY, width, height, lo, hi) {
         // Draw subtle centre baseline
         this.fftCtx.strokeStyle = '#0d2e16';
         this.fftCtx.lineWidth = 1;
@@ -599,7 +673,9 @@ class HeartRateMonitor {
         this.fftCtx.moveTo(0, midY);
         this.fftCtx.lineTo(width, midY);
         this.fftCtx.stroke();
+    }
 
+    drawWaveformCurve(pts, toX, toY) {
         // Draw the waveform as a smooth Catmull-Rom spline
         this.fftCtx.beginPath();
         this.fftCtx.strokeStyle = '#00ff88';
