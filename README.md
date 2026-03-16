@@ -35,3 +35,7 @@
 ## Requirements
 - Modern browser with WebRTC support
 - Camera access permissions
+
+
+## For engineers
+- If you want to run tests execute them with `node tests.js` 
