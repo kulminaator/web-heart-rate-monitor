@@ -25,6 +25,7 @@
 - `index.html` - Main HTML structure
 - `style.css` - Styling for the application
 - `script.js` - Core application logic
+- `tests.js` - Testing library and tests
 
 ## How to Use
 - Easy path: open the page from github at https://kulminaator.github.io/web-heart-rate-monitor/ 
@@ -36,3 +37,15 @@
 - Modern browser with WebRTC support
 - Camera access permissions
 
+
+## Development requirements
+- fairly recent nodejs and npm
+- tests are run with npm test
+
+
+## Coding standards and flow
+- We always start out with planning and making a todo list of tasks
+- We verify after every edit that we did not make any typos or logic mistakes
+- We create tests for every new functionality added, if possible
+- Tests are run with npm and nodejs and not in a browser
+- We run tests and repair any defects

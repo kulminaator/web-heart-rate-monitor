@@ -178,8 +178,15 @@
 
     </div>
 
-    <script src="script.js"></script>
-    <script>
+    <script type="module">
+        import { HeartRateMonitor } from './script.js';
+        
+        // Initialize DOM elements for HeartRateMonitor
+        const monitor = new HeartRateMonitor();
+        monitor.initDOM();
+        monitor.setupEventListeners();
+        monitor.setupCanvas();
+        
         // Clock
         function updateClock() {
             const now = new Date();
@@ -190,6 +197,18 @@
         }
         setInterval(updateClock, 1000);
         updateClock();
+        
+        // Initialize modal
+        const introModal = document.querySelector('#intro-modal');
+        const closeBtn = document.querySelector('#close-btn');
+        
+        if (introModal) {
+            introModal.showModal();
+        }
+        
+        closeBtn.addEventListener('click', () => {
+            introModal.close();
+        });
     </script>
 </body>
 </html>

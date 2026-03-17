@@ -1,0 +1,22 @@
+{
+  "name": "web-heart-rate-monitor",
+  "version": "1.0.0",
+  "description": "Web browser based heart rate monitor using camera and FFT analysis",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules tests.js",
+    "test:watch": "nodemon --exec node --experimental-vm-modules tests.js"
+  },
+  "keywords": [
+    "heart-rate",
+    "camera",
+    "fft",
+    "health",
+    "monitor"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}

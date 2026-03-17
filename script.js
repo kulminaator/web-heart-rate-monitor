@@ -1,31 +1,286 @@
-class HeartRateMonitor {
+/**
+ * Heart Rate Monitor - ES6 Module
+ * Core functionality for heart rate monitoring using camera
+ */
+
+/**
+ * FFT (Cooley-Tukey, in-place, radix-2)
+ * @param {Array} signal - Input signal
+ * @returns {{real: Float64Array, imag: Float64Array}} - FFT result
+ */
+export function fft(signal) {
+    const N = signal.length;
+    const real = Float64Array.from(signal);
+    const imag = new Float64Array(N);
+
+    // Bit-reversal permutation
+    let j = 0;
+    for (let i = 1; i < N; i++) {
+        let bit = N >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            [real[i], real[j]] = [real[j], real[i]];
+            [imag[i], imag[j]] = [imag[j], imag[i]];
+        }
+    }
+
+    // Butterfly operations
+    for (let len = 2; len <= N; len <<= 1) {
+        const ang = -2 * Math.PI / len;
+        const wRe = Math.cos(ang);
+        const wIm = Math.sin(ang);
+        for (let i = 0; i < N; i += len) {
+            let curRe = 1, curIm = 0;
+            for (let k = 0; k < len / 2; k++) {
+                const uRe = real[i + k];
+                const uIm = imag[i + k];
+                const vRe = real[i + k + len / 2] * curRe - imag[i + k + len / 2] * curIm;
+                const vIm = real[i + k + len / 2] * curIm + imag[i + k + len / 2] * curRe;
+                real[i + k] = uRe + vRe;
+                imag[i + k] = uIm + vIm;
+                real[i + k + len / 2] = uRe - vRe;
+                imag[i + k + len / 2] = uIm - vIm;
+                const newRe = curRe * wRe - curIm * wIm;
+                curIm = curRe * wIm + curIm * wRe;
+                curRe = newRe;
+            }
+        }
+    }
+
+    return { real, imag };
+}
+
+/**
+ * Find next power of 2
+ * @param {number} n - Input number
+ * @returns {number} - Next power of 2
+ */
+export function nextPowerOf2(n) {
+    let p = 1;
+    while (p < n) p <<= 1;
+    return p;
+}
+
+/**
+ * Resample values to uniform grid
+ * @param {Array} values - Input values
+ * @param {number} targetLength - Target length
+ * @returns {Array} - Resampled values
+ */
+export function resampleUniform(values, targetLength) {
+    const result = new Array(targetLength);
+    const ratio = (values.length - 1) / (targetLength - 1);
+    for (let i = 0; i < targetLength; i++) {
+        const pos = i * ratio;
+        const lo = Math.floor(pos);
+        const hi = Math.min(lo + 1, values.length - 1);
+        const t = pos - lo;
+        result[i] = values[lo] * (1 - t) + values[hi] * t;
+    }
+    return result;
+}
+
+/**
+ * Calculate frame brightness from video frame
+ * @param {HTMLVideoElement} video - Video element
+ * @returns {number|null} - Brightness value or null
+ */
+export function calculateFrameBrightness(video) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+
+    // Sample the center quarter of the frame
+    const x0 = Math.floor(w / 4);
+    const x1 = Math.floor(3 * w / 4);
+    const y0 = Math.floor(h / 4);
+    const y1 = Math.floor(3 * h / 4);
+    const step = 2;
+
+    let sum = 0;
+    let count = 0;
+    for (let y = y0; y < y1; y += step) {
+        for (let x = x0; x < x1; x += step) {
+            const idx = (y * w + x) * 4;
+            // Use red channel — most sensitive to blood-volume changes under torch
+            sum += data[idx];
+            count++;
+        }
+    }
+
+    return count > 0 ? sum / count : null;
+}
+
+/**
+ * Process FFT and return magnitudes
+ * @param {Array} signalBuffer - Signal buffer with timestamps
+ * @returns {{magnitudes: Array, sampleRate: number, N: number, freqResolution: number}|null}
+ */
+export function processFFT(signalBuffer) {
+    const values = signalBuffer.map(s => s.value);
+
+    // Resample to a uniform grid via linear interpolation
+    const N = nextPowerOf2(values.length);
+    const resampled = resampleUniform(values, N);
+
+    // Estimate sample rate from the buffer
+    const duration = (signalBuffer[signalBuffer.length - 1].time - signalBuffer[0].time) / 1000;
+    const sampleRate = (signalBuffer.length - 1) / duration; // samples/sec
+
+    // Remove DC offset
+    const mean = resampled.reduce((a, b) => a + b, 0) / resampled.length;
+    const signal = resampled.map(v => v - mean);
+
+    // Apply Hann window to reduce spectral leakage
+    const windowed = signal.map((v, i) => v * 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1))));
+
+    // Compute FFT magnitudes
+    const { real, imag } = fft(windowed);
+    const magnitudes = [];
+    for (let i = 0; i < N / 2; i++) {
+        magnitudes.push(Math.sqrt(real[i] * real[i] + imag[i] * imag[i]));
+    }
+
+    const freqResolution = sampleRate / N;
+
+    return { magnitudes, sampleRate, N, freqResolution };
+}
+
+/**
+ * Find peak frequency in BPM range (40-200 BPM = 0.67-3.33 Hz)
+ * @param {Array} magnitudes - FFT magnitudes
+ * @param {number} freqResolution - Frequency resolution
+ * @returns {number} - Peak bin index
+ */
+export function findPeakFrequency(magnitudes, freqResolution) {
+    // Find the dominant frequency in the 0.67–3.33 Hz range (40–200 BPM)
+    const minBin = Math.ceil(0.67 / freqResolution);
+    const maxBin = Math.floor(3.33 / freqResolution);
+
+    let peakBin = minBin;
+    let peakMag = -Infinity;
+    for (let i = minBin; i <= Math.min(maxBin, magnitudes.length - 1); i++) {
+        if (magnitudes[i] > peakMag) {
+            peakMag = magnitudes[i];
+            peakBin = i;
+        }
+    }
+
+    return peakBin;
+}
+
+/**
+ * Apply harmonic correction to find true heart rate
+ * @param {Array} magnitudes - FFT magnitudes
+ * @param {number} peakBin - Peak bin index
+ * @param {number} freqResolution - Frequency resolution
+ * @returns {number} - Corrected peak bin index
+ */
+export function applyHarmonicCorrection(magnitudes, peakBin, freqResolution) {
+    // The PPG waveform has a dicrotic notch (two bumps per beat), so the FFT
+    // often finds a strong sub-harmonic at f/2 (half the true heart rate).
+    // If doubling the candidate frequency stays in range AND its bin has at
+    // least 40% of the peak's energy, the sub-harmonic fooled us — use 2×.
+    const maxBin = Math.floor(3.33 / freqResolution);
+    const harmonicBin = peakBin * 2;
+    if (harmonicBin <= Math.min(maxBin, magnitudes.length - 1)) {
+        // Also check the two neighbouring bins around the harmonic for robustness
+        const harmonicMag = Math.max(
+            magnitudes[harmonicBin - 1] || 0,
+            magnitudes[harmonicBin]     || 0,
+            magnitudes[harmonicBin + 1] || 0
+        );
+        if (harmonicMag >= magnitudes[peakBin] * 0.40) {
+            return harmonicBin;
+        }
+    }
+
+    return peakBin;
+}
+
+/**
+ * Update BPM history with exponential moving average smoothing
+ * @param {Array} bpmHistory - BPM history array
+ * @param {number} rawBPM - Raw BPM value
+ * @param {number} smoothedBPM - Current smoothed BPM
+ * @returns {{bpmHistory: Array, smoothedBPM: number, currentBPM: number, peakBPM: number, lowBPM: number}}
+ */
+export function updateBPMHistory(bpmHistory, rawBPM, smoothedBPM, peakBPM, lowBPM) {
+    // ── Exponential moving average smoothing ──────────────────────────────
+    // Damps single-frame jumps. α=0.35 → new reading gets 35% weight,
+    // history gets 65%. Higher α = more responsive, lower = more stable.
+    
+    let currentBPM = rawBPM;
+    
+    if (rawBPM >= 40 && rawBPM <= 200) {
+        if (smoothedBPM === 0) {
+            // First valid reading — seed the filter directly
+            smoothedBPM = rawBPM;
+        } else {
+            // Widen alpha if the raw reading is far from the smoothed value
+            // to recover quickly from a sustained true change in heart rate
+            const delta = Math.abs(rawBPM - smoothedBPM);
+            const alpha = delta > 20 ? 0.6 : 0.35;
+            smoothedBPM = alpha * rawBPM + (1 - alpha) * smoothedBPM;
+        }
+
+        currentBPM = Math.round(smoothedBPM);
+
+        const now = Date.now();
+        bpmHistory.push({ value: currentBPM, time: now });
+        const cutoff = now - 30 * 1000; // BPM_HISTORY_WINDOW = 30 seconds
+        while (bpmHistory.length > 0 && bpmHistory[0].time < cutoff) {
+            bpmHistory.shift();
+        }
+
+        // Update peak and low
+        if (currentBPM > peakBPM) peakBPM = currentBPM;
+        if (currentBPM < lowBPM) lowBPM = currentBPM;
+    }
+
+    return { bpmHistory, smoothedBPM, currentBPM, peakBPM, lowBPM };
+}
+
+/**
+ * Heart Rate Monitor Class
+ * Core class for heart rate monitoring functionality
+ */
+export class HeartRateMonitor {
     constructor() {
-        this.video = document.getElementById('video');
-        this.bpmDisplay = document.getElementById('bpm');
-        this.canvas = document.getElementById('graph');
-        this.ctx = this.canvas.getContext('2d');
-        this.fftCanvas = document.getElementById('fft-graph');
-        this.fftCtx = this.fftCanvas.getContext('2d');
-        this.startBtn = document.getElementById('startBtn');
-        this.stopBtn = document.getElementById('stopBtn');
-        this.torchBtn = document.getElementById('torchBtn');
+        this.video = null;
+        this.bpmDisplay = null;
+        this.canvas = null;
+        this.ctx = null;
+        this.fftCanvas = null;
+        this.fftCtx = null;
+        this.startBtn = null;
+        this.stopBtn = null;
+        this.torchBtn = null;
 
         // Retro UI elements
-        this.pixelCanvas   = document.getElementById('pixelCanvas');
-        this.pixelCtx      = this.pixelCanvas ? this.pixelCanvas.getContext('2d') : null;
-        this.statusDot     = document.getElementById('statusDot');
-        this.statusLabel   = document.getElementById('statusLabel');
-        this.heartIcon     = document.getElementById('heartIcon');
-        this.bpmBar        = document.getElementById('bpmBar');
-        this.statCurrent   = document.getElementById('statCurrent');
-        this.statAvg       = document.getElementById('statAvg');
-        this.statPeak      = document.getElementById('statPeak');
-        this.statLow       = document.getElementById('statLow');
-        this.sampleCount   = document.getElementById('sampleCount');
-        this.peakBPM       = 0;
-        this.lowBPM        = 999;
+        this.pixelCanvas = null;
+        this.pixelCtx = null;
+        this.statusDot = null;
+        this.statusLabel = null;
+        this.heartIcon = null;
+        this.bpmBar = null;
+        this.statCurrent = null;
+        this.statAvg = null;
+        this.statPeak = null;
+        this.statLow = null;
+        this.sampleCount = null;
+        this.peakBPM = 0;
+        this.lowBPM = 999;
         this.lastPixelUpdate = 0;
-        this.PIXEL_COLS    = 48;
+        this.PIXEL_COLS = 48;
 
         this.stream = null;
         this.animationId = null;
@@ -50,9 +305,34 @@ class HeartRateMonitor {
 
         this.smoothedBPM = 0;   // exponential moving average across readings
         this.torchEnabled = false;
+    }
 
-        this.setupEventListeners();
-        this.setupCanvas();
+    /**
+     * Initialize DOM element references
+     */
+    initDOM() {
+        this.video = document.getElementById('video');
+        this.bpmDisplay = document.getElementById('bpm');
+        this.canvas = document.getElementById('graph');
+        this.ctx = this.canvas.getContext('2d');
+        this.fftCanvas = document.getElementById('fft-graph');
+        this.fftCtx = this.fftCanvas.getContext('2d');
+        this.startBtn = document.getElementById('startBtn');
+        this.stopBtn = document.getElementById('stopBtn');
+        this.torchBtn = document.getElementById('torchBtn');
+
+        // Retro UI elements
+        this.pixelCanvas = document.getElementById('pixelCanvas');
+        this.pixelCtx = this.pixelCanvas ? this.pixelCanvas.getContext('2d') : null;
+        this.statusDot = document.getElementById('statusDot');
+        this.statusLabel = document.getElementById('statusLabel');
+        this.heartIcon = document.getElementById('heartIcon');
+        this.bpmBar = document.getElementById('bpmBar');
+        this.statCurrent = document.getElementById('statCurrent');
+        this.statAvg = document.getElementById('statAvg');
+        this.statPeak = document.getElementById('statPeak');
+        this.statLow = document.getElementById('statLow');
+        this.sampleCount = document.getElementById('sampleCount');
     }
 
     setupEventListeners() {
@@ -185,7 +465,7 @@ class HeartRateMonitor {
     sampleFrame(now) {
         if (this.video.videoWidth === 0 || this.video.videoHeight === 0) return;
 
-        const sampleValue = this.calculateFrameBrightness();
+        const sampleValue = calculateFrameBrightness(this.video);
         if (sampleValue === null) return;
 
         const sample = { value: sampleValue, time: now };
@@ -193,39 +473,6 @@ class HeartRateMonitor {
         this.waveformDisplay.push({ value: sample.value, time: now });
 
         this.trimSignalBuffers(now);
-    }
-
-    calculateFrameBrightness() {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = this.video.videoWidth;
-        canvas.height = this.video.videoHeight;
-        ctx.drawImage(this.video, 0, 0, canvas.width, canvas.height);
-
-        const w = canvas.width;
-        const h = canvas.height;
-        const imageData = ctx.getImageData(0, 0, w, h);
-        const data = imageData.data;
-
-        // Sample the center quarter of the frame
-        const x0 = Math.floor(w / 4);
-        const x1 = Math.floor(3 * w / 4);
-        const y0 = Math.floor(h / 4);
-        const y1 = Math.floor(3 * h / 4);
-        const step = 2;
-
-        let sum = 0;
-        let count = 0;
-        for (let y = y0; y < y1; y += step) {
-            for (let x = x0; x < x1; x += step) {
-                const idx = (y * w + x) * 4;
-                // Use red channel — most sensitive to blood-volume changes under torch
-                sum += data[idx];
-                count++;
-            }
-        }
-
-        return count > 0 ? sum / count : null;
     }
 
     trimSignalBuffers(now) {
@@ -247,185 +494,26 @@ class HeartRateMonitor {
     analyzeSignal() {
         if (this.signalBuffer.length < 64) return; // Need enough data
 
-        const { magnitudes, sampleRate, N, freqResolution } = this.processFFT();
+        const { magnitudes, sampleRate, N, freqResolution } = processFFT(this.signalBuffer);
         if (!magnitudes) return;
 
-        const peakBin = this.findPeakFrequency(magnitudes, freqResolution);
-        const correctedPeakBin = this.applyHarmonicCorrection(magnitudes, peakBin, freqResolution);
+        const peakBin = findPeakFrequency(magnitudes, freqResolution);
+        const correctedPeakBin = applyHarmonicCorrection(magnitudes, peakBin, freqResolution);
 
         const rawBPM = Math.round(correctedPeakBin * freqResolution * 60);
-        this.updateBPMHistory(rawBPM);
-    }
-
-    processFFT() {
-        const values = this.signalBuffer.map(s => s.value);
-
-        // Resample to a uniform grid via linear interpolation
-        const N = this.nextPowerOf2(values.length);
-        const resampled = this.resampleUniform(values, N);
-
-        // Estimate sample rate from the buffer
-        const duration = (this.signalBuffer[this.signalBuffer.length - 1].time - this.signalBuffer[0].time) / 1000;
-        const sampleRate = (this.signalBuffer.length - 1) / duration; // samples/sec
-
-        // Remove DC offset
-        const mean = resampled.reduce((a, b) => a + b, 0) / resampled.length;
-        const signal = resampled.map(v => v - mean);
-
-        // Apply Hann window to reduce spectral leakage
-        const windowed = signal.map((v, i) => v * 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1))));
-
-        // Compute FFT magnitudes
-        const { real, imag } = this.fft(windowed);
-        const magnitudes = [];
-        for (let i = 0; i < N / 2; i++) {
-            magnitudes.push(Math.sqrt(real[i] * real[i] + imag[i] * imag[i]));
-        }
-
-        // Store magnitudes for the FFT graph
-        this.fftMagnitudes = magnitudes;
-        this.fftSampleRate = sampleRate;
-        this.fftN = N;
-
-        const freqResolution = sampleRate / N;
-
-        return { magnitudes, sampleRate, N, freqResolution };
-    }
-
-    findPeakFrequency(magnitudes, freqResolution) {
-        // Find the dominant frequency in the 0.67–3.33 Hz range (40–200 BPM)
-        const minBin = Math.ceil(0.67 / freqResolution);
-        const maxBin = Math.floor(3.33 / freqResolution);
-
-        let peakBin = minBin;
-        let peakMag = -Infinity;
-        for (let i = minBin; i <= Math.min(maxBin, magnitudes.length - 1); i++) {
-            if (magnitudes[i] > peakMag) {
-                peakMag = magnitudes[i];
-                peakBin = i;
-            }
-        }
-
-        return peakBin;
-    }
-
-    applyHarmonicCorrection(magnitudes, peakBin, freqResolution) {
-        // ── Harmonic correction ────────────────────────────────────────────────
-        // The PPG waveform has a dicrotic notch (two bumps per beat), so the FFT
-        // often finds a strong sub-harmonic at f/2 (half the true heart rate).
-        // If doubling the candidate frequency stays in range AND its bin has at
-        // least 40% of the peak's energy, the sub-harmonic fooled us — use 2×.
-        const maxBin = Math.floor(3.33 / freqResolution);
-        const harmonicBin = peakBin * 2;
-        if (harmonicBin <= Math.min(maxBin, magnitudes.length - 1)) {
-            // Also check the two neighbouring bins around the harmonic for robustness
-            const harmonicMag = Math.max(
-                magnitudes[harmonicBin - 1] || 0,
-                magnitudes[harmonicBin]     || 0,
-                magnitudes[harmonicBin + 1] || 0
-            );
-            if (harmonicMag >= magnitudes[peakBin] * 0.40) {
-                return harmonicBin;
-            }
-        }
-
-        return peakBin;
-    }
-
-    updateBPMHistory(rawBPM) {
-        // ── Exponential moving average smoothing ──────────────────────────────
-        // Damps single-frame jumps. α=0.35 → new reading gets 35% weight,
-        // history gets 65%. Higher α = more responsive, lower = more stable.
-        if (rawBPM >= 40 && rawBPM <= 200) {
-            if (this.smoothedBPM === 0) {
-                // First valid reading — seed the filter directly
-                this.smoothedBPM = rawBPM;
-            } else {
-                // Widen alpha if the raw reading is far from the smoothed value
-                // to recover quickly from a sustained true change in heart rate
-                const delta = Math.abs(rawBPM - this.smoothedBPM);
-                const alpha = delta > 20 ? 0.6 : 0.35;
-                this.smoothedBPM = alpha * rawBPM + (1 - alpha) * this.smoothedBPM;
-            }
-
-            const bpm = Math.round(this.smoothedBPM);
-            this.currentBPM = bpm;
-
-            const now = this.signalBuffer.length > 0
-                ? this.signalBuffer[this.signalBuffer.length - 1].time
-                : Date.now();
-            this.bpmHistory.push({ value: bpm, time: now });
-            const cutoff = now - this.BPM_HISTORY_WINDOW * 1000;
-            while (this.bpmHistory.length > 0 && this.bpmHistory[0].time < cutoff) {
-                this.bpmHistory.shift();
-            }
-            this.pulseData.push(bpm);
-            if (this.pulseData.length > 60) this.pulseData.shift();
-        }
-    }
-
-    // --- FFT (Cooley-Tukey, in-place, radix-2) ---
-
-    fft(signal) {
-        const N = signal.length;
-        const real = Float64Array.from(signal);
-        const imag = new Float64Array(N);
-
-        // Bit-reversal permutation
-        let j = 0;
-        for (let i = 1; i < N; i++) {
-            let bit = N >> 1;
-            for (; j & bit; bit >>= 1) j ^= bit;
-            j ^= bit;
-            if (i < j) {
-                [real[i], real[j]] = [real[j], real[i]];
-                [imag[i], imag[j]] = [imag[j], imag[i]];
-            }
-        }
-
-        // Butterfly operations
-        for (let len = 2; len <= N; len <<= 1) {
-            const ang = -2 * Math.PI / len;
-            const wRe = Math.cos(ang);
-            const wIm = Math.sin(ang);
-            for (let i = 0; i < N; i += len) {
-                let curRe = 1, curIm = 0;
-                for (let k = 0; k < len / 2; k++) {
-                    const uRe = real[i + k];
-                    const uIm = imag[i + k];
-                    const vRe = real[i + k + len / 2] * curRe - imag[i + k + len / 2] * curIm;
-                    const vIm = real[i + k + len / 2] * curIm + imag[i + k + len / 2] * curRe;
-                    real[i + k] = uRe + vRe;
-                    imag[i + k] = uIm + vIm;
-                    real[i + k + len / 2] = uRe - vRe;
-                    imag[i + k + len / 2] = uIm - vIm;
-                    const newRe = curRe * wRe - curIm * wIm;
-                    curIm = curRe * wIm + curIm * wRe;
-                    curRe = newRe;
-                }
-            }
-        }
-
-        return { real, imag };
-    }
-
-    nextPowerOf2(n) {
-        let p = 1;
-        while (p < n) p <<= 1;
-        return p;
-    }
-
-    resampleUniform(values, targetLength) {
-        const result = new Array(targetLength);
-        const ratio = (values.length - 1) / (targetLength - 1);
-        for (let i = 0; i < targetLength; i++) {
-            const pos = i * ratio;
-            const lo = Math.floor(pos);
-            const hi = Math.min(lo + 1, values.length - 1);
-            const t = pos - lo;
-            result[i] = values[lo] * (1 - t) + values[hi] * t;
-        }
-        return result;
+        const result = updateBPMHistory(
+            this.bpmHistory, 
+            rawBPM, 
+            this.smoothedBPM, 
+            this.peakBPM, 
+            this.lowBPM
+        );
+        
+        this.bpmHistory = result.bpmHistory;
+        this.smoothedBPM = result.smoothedBPM;
+        this.currentBPM = result.currentBPM;
+        this.peakBPM = result.peakBPM;
+        this.lowBPM = result.lowBPM;
     }
 
     // --- Display & graphs ---
@@ -707,20 +795,3 @@ class HeartRateMonitor {
         this.fftCtx.shadowBlur = 0;
     }
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    new HeartRateMonitor();
-
-    const introModal = document.querySelector('#intro-modal');
-    const closeBtn = document.querySelector('#close-btn');
-
-    // .showModal() is the native method to open the dialog as a top-level overlay
-    if (introModal) {
-        introModal.showModal();
-    }
-
-    // Close logic using arrow functions
-    closeBtn.addEventListener('click', () => {
-        introModal.close();
-    });
-});
